@@ -192,13 +192,13 @@ s32 math_table[] = {
 };
 
 
-static u32 is_dbg = 0;
+static u32 dbg = 0;
 static u32 raw_save_window = 0;
 static u32 raw_save_limit = 0;
 static u32 raw_save_count = 0;
 static SAVEDATA_HEADER_T *save_header;
 static u32 rec_num = 1;
-static u32 rec_interval = 5;
+static u32 rec_interval_in_ms = 5;
 static u32 endless = 0;
 static u32 delay_in_ms = 0;
 static u32 bytes_on_send = 0;
@@ -485,13 +485,12 @@ s32 send_data(s8 * sendbuf, s32 snebuflen)
     tval.tv_usec = 0;
     leftlen = snebuflen;
 
-	if (is_dbg == 2) {	    
+	if (dbg == 2) {	    
 	    for (i = 0; i < snebuflen; i++) {
 	        printf("%02X ", (u8)sendbuf[i]);
 	    }
-	    printf("\nsendlen %d\n", snebuflen);
+	    printf("\n===> %d\n", snebuflen);
 	}
-    
     while (leftlen) {
     	sendlen = (leftlen <= bytes_on_send) ? leftlen : bytes_on_send; 
 	    FD_ZERO(&fds_write);  
@@ -586,21 +585,34 @@ s32 send_trans_packet(u32 len)
 {
     u8 * send = NULL;
     u32 sendlen = len;
+    u8 type = rand()%20;
 
-	if (0 == rand()%20) {
+	if (0 == type) {
 	    send = sendbuf + sendlen;
 	    memcpy(send, msgbuf, msglen);
 	    sendlen += msglen;
-	    printf("+msg\n");
-	    send_data((s8 *)sendbuf, sendlen);
+        if (1 == dbg) {
+            printf("+ ");
+        }else if (2 == dbg) {
+            printf("+ \n");
+        }
+	    send_data((s8 *)sendbuf, sendlen);        
 	}
-	else if (1 == rand()%20) {
+	else if (1 == type) {
+        if (1 == dbg) {
+            printf("* ");
+        }
+        else if (2 == dbg) {
+            printf("* \n");
+        }
 	    send_data((s8 *)sendbuf, sendlen);
-	    printf("-msg\n");
-	    send_data((s8 *)msgbuf, msglen);
+	    send_data((s8 *)msgbuf, msglen);        
 	}
 	else {
-	    send_data((s8 *)sendbuf, sendlen);
+        if (1 == dbg) {
+            printf(". ");
+        }
+	    send_data((s8 *)sendbuf, sendlen);        
 	}    
 	usleep(1000*delay_in_ms);
     return 0;
@@ -713,51 +725,79 @@ void catch_Signal(int Sign)
     }
 }
 
-/** 用户 条数 间隔时间 */
+
+void usage()
+{
+    printf("Usage:\n\n");
+    printf("sdf <ip> <port> <unit> <delay> <interval> <userid> <num> <debug> \n");
+    printf("    ip:           ip address of remote server\n");
+    printf("    port:         port number of remote server\n");
+    printf("    unit:         packet size\n");
+    printf("    delay:        interval between 2 record, ms\n");
+    printf("    interval:     interval between 2 packet, ms\n");
+    printf("    userid:       the unique id of user\n");
+    printf("    num:          recored number, -1 means endless\n");
+    printf("    debug:        debug level, 0-none 1-tidy 2-detail\n");
+    printf("\n\n");
+    printf("Examples:\n");
+	printf(" Generate upgrade image:\n");
+	printf("    sdf 114.215.121.190 9203 512 100 1000 990049 100 2\n");
+}
+
+
 s32 main(s32 argc, s8 **argv)
 {
     s32 i = 0;
 	u32 userid = 0;
+    u32 chipid[3];
     
 	signal(SIGPIPE, catch_Signal);
     
     memset(server_ip, 0x00, sizeof(server_ip));
 
-    if (argc < 2) {
-        printf("Please indicate userid\n");
+    if (argc < 9) {
+        usage();
         return -1;
     }
-    userid = atol(argv[1]);
-    set_userid(userid);
-    if (argc >= 3) {
-        rec_num = atol(argv[2]);
-        endless = (-1 == rec_num) ? 1 : 0;
-        if (argc >= 4) {
-	        rec_interval = atol(argv[3]);
-            if (argc >= 5) {
-		        strcpy(server_ip, argv[4]);
-                if (argc >= 6) {
-			        server_port = atol(argv[5]);
-                    if (argc >= 7) {
-				        is_dbg = atol(argv[6]);
-                        if (argc >= 8) {
-					        delay_in_ms = atol(argv[7]);
-                            if (argc >= 9) {
-						        bytes_on_send = atol(argv[8]);
-						    }
-					    }
+
+	/* <ip> <port> <unit> <delay> <interval> <userid> <num> <debug> */
+    if (argc >= 2) {
+        strcpy(server_ip, argv[1]);
+        if (argc >= 3) {
+	        server_port = atol(argv[2]);
+            if (argc >= 4) {
+		        bytes_on_send = atol(argv[3]);
+                if (argc >= 5) {
+			        rec_interval_in_ms = atol(argv[4]);
+                    if (argc >= 6) {
+				        delay_in_ms = atol(argv[5]);
+                        if (argc >= 7) {
+				        	userid = atol(argv[6]);
+    						set_userid(userid);
+                            if (argc >= 8) {
+					        	rec_num = atol(argv[7]);
+        						endless = (-1 == rec_num) ? 1 : 0;
+                                if (argc >= 9) {
+						        	dbg = atol(argv[8]);
+		                        }
+	                        }
+                        }
 				    }
 			    }
 		    }
 	    }
     }
+    
+    get_chipid((u8 *)chipid, CPU_ID_SIZE);
     printf("--------------------------\n");
-    printf("%-10s: %d\n", "USERID", userid);
-	printf("%-10s: %d\n", "NUM", rec_num);
-	printf("%-10s: %d\n", "INTERVAL", rec_interval);
-   	printf("%-10s: %d\n", "DEBUG", is_dbg);
     printf("%-10s: %s:%d\n", "SERVER", server_ip, server_port);
+    printf("%-10s: %d\n", "USERID", userid);
+    printf("%-10s: %08X%08X%08X\n", "CHIPID", chipid[2], chipid[1], chipid[0]);
+	printf("%-10s: %d\n", "INTERVAL", rec_interval_in_ms);
     printf("%-10s: %d\n", "DELAY", delay_in_ms);
+    printf("%-10s: %d\n", "UNIT SIZE", bytes_on_send);
+	printf("%-10s: %d\n", "NUM", rec_num);
+   	printf("%-10s: %d\n", "DEBUG", dbg);
     printf("--------------------------\n\n");
     
 	(void)pen_params_init();
@@ -785,7 +825,7 @@ s32 main(s32 argc, s8 **argv)
         printf("USERID %d (%d) %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", 
             userid, i, datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
             datetime.tv_wday, datetime.tv_hour, datetime.tv_min, datetime.tv_sec);
-	    sleep(rec_interval);
+	    usleep(1000*rec_interval_in_ms);
         i = (endless) ? 0 : i;
 	}
     free(msgbuf);

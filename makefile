@@ -6,13 +6,14 @@ LDFLAGS =
 SRCS = $(wildcard *.c main/*.c src/*.c) 
 INCS = $(addprefix -I, . inc) 
 OBJS = $(patsubst %c, %o, $(SRCS))  
-TARGET = $(basename $(notdir $(wildcard main/*.c)))   
+TARGET = $(addprefix exe/, $(basename $(notdir $(wildcard main/*.c))))   
 
 .PHONY: all clean  
   
 all: $(TARGET)
   
 $(TARGET): $(OBJS)  
+	@mkdir -p exe
 	$(LD) $(LDFLAGS) -o $@ $^
   
 %o: %c
