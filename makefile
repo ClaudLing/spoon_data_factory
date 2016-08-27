@@ -1,22 +1,25 @@
-CC = gcc  
-LD = gcc  
-CFLAGS = 
-LDFLAGS = 
-  
-SRCS = $(wildcard *.c source/*.c)  
+CC = gcc
+LD = gcc
+CFLAGS =
+LDFLAGS =
+
+SRCS = $(wildcard *.c main/*.c src/*.c) 
+INCS = $(addprefix -I, . inc) 
 OBJS = $(patsubst %c, %o, $(SRCS))  
-TARGET = datetimetest  
-  
+TARGET = $(basename $(notdir $(wildcard main/*.c)))   
+
 .PHONY: all clean  
   
-all: $(TARGET)  
+all: $(TARGET)
   
 $(TARGET): $(OBJS)  
 	$(LD) $(LDFLAGS) -o $@ $^
   
 %o: %c
-	$(CC) $(CFLAGS) -o $@ $<  
+	$(CC) $(CFLAGS) $(INCS) -o $(patsubst %c, %o, $<) -c $<
   
 clean:  
-	rm -f *.o $(TARGET)  
+	rm -f $(OBJS) $(TARGET)
 
+test:
+	echo $(INCS)

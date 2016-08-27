@@ -16,17 +16,12 @@
  * @{
  */
 
-#ifndef __SDF_H__ 
-#define __SDF_H__ 
+#ifndef __SDF_H__
+#define __SDF_H__
 
 
 #include "os_def.h"
-
-
-#define MAGIC_HEAD 0xDEADBEEF
-
-#define USER_ID_SIZE 4
-#define CPU_ID_SIZE 12
+#include "bsp.h"
 
 typedef struct INEMO_DATA
 {
@@ -80,7 +75,7 @@ typedef struct S_TRAS_PACKET
     u8 type;
     u8 seqid;
     u32 frameid;
-    u32 metaid;    
+    u32 metaid;
     void * data;
     u16 crc;
 }S_TRAS_PACKET,*S_TRAS_PACKET_PTR;
@@ -147,7 +142,7 @@ typedef struct date_time {
   s32 tv_wday;			/* Day of week.	[0-6] */
   s32 tv_mday;			/* Day.		[1-31] */
   s32 tv_mon;			/* Month.	[0-11] */
-  s32 tv_year;			/* Year - 2000. */  
+  s32 tv_year;			/* Year - 2000. */
 }date_time;
 
 #define CENTURY_BASE	2000
