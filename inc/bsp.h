@@ -142,6 +142,7 @@ typedef struct TAG_MODEL_INFO
 
 s32 get_userid(u8 * buf,u8 len);
 s32 set_userid(u32 id);
+s32 set_chipid(u8 * buf, u8 len);
 s32 get_chipid(u8 * buf, u8 len);
 s32 gen_basic_info_msg(u8 * buf, u16 *len);
 

@@ -202,7 +202,8 @@ static u32 rec_interval_in_ms = 5;
 static u32 endless = 0;
 static u32 delay_in_ms = 0;
 static u32 bytes_on_send = 0;
-
+static s8 *chipidstr = NULL;
+static u32 mix = 1;
 
 u8 *pagebuf = NULL;
 u8 *sendbuf = NULL;
@@ -213,11 +214,10 @@ u32 global_trans_idx = 0;
 
 int sock_fd = 0;
 struct sockaddr_in ser_addr;
-char server_ip[32];
-int server_port = 9203;
+s8 server_ip[32];
+s32 server_port = 9203;
 date_time datetime;
 fd_set writefd;
-
 
 
 static s32 pen_params_init()
@@ -373,7 +373,7 @@ int init_clinet()
     memset(&ser_addr, 0, sizeof(ser_addr));
     ser_addr.sin_family = AF_INET;  
     ser_addr.sin_port = htons(server_port);
-    inet_aton(server_ip, (struct in_addr *)&ser_addr.sin_addr);
+    inet_aton((s8 *)server_ip, (struct in_addr *)&ser_addr.sin_addr);
 	return 0;
 }
 
@@ -587,7 +587,10 @@ s32 send_trans_packet(u32 len)
     u32 sendlen = len;
     u8 type = rand()%20;
 
-	if (0 == type) {
+    if (!mix)
+    	type = 0;
+
+	if (1 == type) {
 	    send = sendbuf + sendlen;
 	    memcpy(send, msgbuf, msglen);
 	    sendlen += msglen;
@@ -596,9 +599,9 @@ s32 send_trans_packet(u32 len)
         }else if (2 == dbg) {
             printf("+ \n");
         }
-	    send_data((s8 *)sendbuf, sendlen);        
+	    send_data((s8 *)sendbuf, sendlen);
 	}
-	else if (1 == type) {
+	else if (2 == type) {
         if (1 == dbg) {
             printf("* ");
         }
@@ -606,9 +609,9 @@ s32 send_trans_packet(u32 len)
             printf("* \n");
         }
 	    send_data((s8 *)sendbuf, sendlen);
-	    send_data((s8 *)msgbuf, msglen);        
+	    send_data((s8 *)msgbuf, msglen);
 	}
-	else {
+	else  {
         if (1 == dbg) {
             printf(". ");
         }
@@ -729,20 +732,121 @@ void catch_Signal(int Sign)
 void usage()
 {
     printf("Usage:\n\n");
-    printf("sdf <ip> <port> <unit> <delay> <interval> <userid> <num> <debug> \n");
-    printf("    ip:           ip address of remote server\n");
-    printf("    port:         port number of remote server\n");
-    printf("    unit:         packet size\n");
-    printf("    delay:        interval between 2 record, ms\n");
-    printf("    interval:     interval between 2 packet, ms\n");
-    printf("    userid:       the unique id of user\n");
-    printf("    num:          recored number, -1 means endless\n");
-    printf("    debug:        debug level, 0-none 1-tidy 2-detail\n");
+    printf("sdf -a<ip> -p<port> -s<unit> -i<interval> -d<delay> -u<userid> -c<chipid> -n<num> -l<debug> -m<mode>\n");
+    printf("    -a:           ip address of remote server\n");
+    printf("    -p:           port number of remote server\n");
+    printf("    -s:           packet size\n");
+    printf("    -i:           interval between 2 record, ms\n");
+    printf("    -d:           interval between 2 packet, ms\n");
+    printf("    -u:           the unique id of user\n");
+    printf("    -c:           the unique id of device\n");
+    printf("    -n:           recored number, -1 means endless\n");
+    printf("    -l:           debug level, 0-none 1-tidy 2-detail\n");
+    printf("    -m:           mixed mode, 0-disable, 1-mix(default)\n");
     printf("\n\n");
     printf("Examples:\n");
 	printf(" Generate upgrade image:\n");
-	printf("    sdf 114.215.121.190 9203 512 100 1000 990049 100 2\n");
+	printf("    sdf -a114.215.121.190 -p9203 -s512 -i1000 -d100 -u476289 -c05D9FF313433504B51126828 -n100 -m0 -l2\n");
 }
+
+/*将大写字母转换成小写字母*/
+s32 tolower(s32 c)
+{
+    if (c >= 'A' && c <= 'Z') {       
+        return c + 'a' - 'A';   
+    }
+    else {
+        return c;
+    }
+}
+
+/*将小写字母转换成大写字母*/
+s32 tohigher(s32 c)
+{
+    if (c >= 'a' && c <= 'z') {       
+        return c - 'a' + 'A';   
+    }
+    else {
+        return c;
+    }
+}
+
+
+int htoi(char *s)
+{  
+    int i;  
+    int n = 0;  
+    
+    if (s[0] == '0' && (s[1]=='x' || s[1]=='X')) {  
+        i = 2;
+    }  
+    else {  
+        i = 0;  
+    }
+    for (; (s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'z') || (s[i] >='A' && s[i] <= 'Z');++i) {  
+        if (tolower(s[i]) > '9') 
+            n = 16 * n + (10 + tolower(s[i]) - 'a');  
+        else 
+            n = 16 * n + (tolower(s[i]) - '0');
+    }
+    return n;  
+}
+
+#if 0
+#define EPR                 fprintf(stderr,
+#define ERR(str, chr)       if(opterr){EPR "%s%c\n", str, chr);}
+
+int     opterr = 1;
+int     optind = 1;
+int     optopt;
+char    *optarg;
+
+int readopt (int argc, char *const argv[], const char *opts)
+{
+    static int sp = 1;
+    int c;
+    char *cp;
+ 
+    if (sp == 1) {
+        if (optind >= argc
+        	|| argv[optind][0] != '-'
+        	|| argv[optind][1] == '\0') {
+            return -1;
+        }
+        else if (strcmp(argv[optind], "--") == 0) {
+            optind++;
+            return -1;
+        }
+    }
+    optopt = c = argv[optind][sp];
+    if (c == ':' || (cp=strchr(opts, c)) == 0) {
+        ERR (": illegal option -- ", c);
+        if (argv[optind][++sp] == '\0') {
+            optind++;
+            sp = 1;
+        }
+        return '?';
+    }
+    if (*++cp == ':') {
+        if (argv[optind][sp+1] != '\0')
+            optarg = &argv[optind++][sp+1];
+        else if (++optind >= argc) {
+            ERR (": option requires an argument -- ", c);
+            sp = 1;
+            return '?';
+        } else
+            optarg = argv[optind++];
+        sp = 1;
+    } else {
+        if (argv[optind][++sp] == '\0') {
+            sp = 1;
+            optind++;
+        }
+        optarg = 0;
+    }
+    return c;
+}
+#endif
 
 
 s32 main(s32 argc, s8 **argv)
@@ -750,6 +854,8 @@ s32 main(s32 argc, s8 **argv)
     s32 i = 0;
 	u32 userid = 0;
     u32 chipid[3];
+    s32 opt;
+    s8 chipidseg[12];
     
 	signal(SIGPIPE, catch_Signal);
     
@@ -760,35 +866,69 @@ s32 main(s32 argc, s8 **argv)
         return -1;
     }
 
-	/* <ip> <port> <unit> <delay> <interval> <userid> <num> <debug> */
-    if (argc >= 2) {
-        strcpy(server_ip, argv[1]);
-        if (argc >= 3) {
-	        server_port = atol(argv[2]);
-            if (argc >= 4) {
-		        bytes_on_send = atol(argv[3]);
-                if (argc >= 5) {
-			        rec_interval_in_ms = atol(argv[4]);
-                    if (argc >= 6) {
-				        delay_in_ms = atol(argv[5]);
-                        if (argc >= 7) {
-				        	userid = atol(argv[6]);
-    						set_userid(userid);
-                            if (argc >= 8) {
-					        	rec_num = atol(argv[7]);
-        						endless = (-1 == rec_num) ? 1 : 0;
-                                if (argc >= 9) {
-						        	dbg = atol(argv[8]);
-		                        }
-	                        }
-                        }
-				    }
-			    }
-		    }
-	    }
+	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:")) != -1) {
+        switch(opt) {
+            case 'a':
+                strcpy(server_ip, optarg);
+                break;
+            case 'p':
+                server_port = atol(optarg);
+                break;
+            case 's':
+                bytes_on_send = atol(optarg);
+                break;
+            case 'i':
+                rec_interval_in_ms = atol(optarg);
+                break;
+            case 'd':
+                delay_in_ms = atol(optarg);
+                break;
+            case 'u':
+                userid = atol(optarg);
+    			set_userid(userid);
+                break;
+            case 'c':
+                chipidstr = optarg;
+                if (24 != strlen(chipidstr)) {
+                    usage();
+    				exit(0);
+                }
+                memset(chipidseg, 0x00, sizeof(chipidseg));
+                strncpy(chipidseg,  chipidstr, 8);
+                chipid[2] = htoi(chipidseg);
+                memset(chipidseg, 0x00, sizeof(chipidseg));
+                strncpy(chipidseg,  (chipidstr+8), 8);
+                chipid[1] = htoi(chipidseg);
+                memset(chipidseg, 0x00, sizeof(chipidseg));
+                strncpy(chipidseg,  (chipidstr+16), 8);
+                chipid[0] = htoi(chipidseg);
+    			(void)set_chipid((u8 *)chipid, CPU_ID_SIZE);
+                break;
+            case 'n':
+                rec_num = atol(optarg);
+        		endless = (-1 == rec_num) ? 1 : 0;
+                break;
+            case 'l':
+                dbg = atol(optarg);
+                break;
+            case 'm':
+                mix = atol(optarg);
+                break;
+            default:
+				printf("Invalid parameter!\n");
+				usage();
+    			exit(0);
+        }
+	}
+
+    if (!chipidstr) {
+        chipid[2] = userid;
+        chipid[1] = 0xFFFFFFFF;
+        chipid[0] = 0xFFFFFFFF;
+        (void)set_chipid((u8 *)chipid, CPU_ID_SIZE);
     }
+	get_date_and_time(0, &datetime);
     
-    get_chipid((u8 *)chipid, CPU_ID_SIZE);
     printf("--------------------------\n");
     printf("%-10s: %s:%d\n", "SERVER", server_ip, server_port);
     printf("%-10s: %d\n", "USERID", userid);
@@ -797,9 +937,14 @@ s32 main(s32 argc, s8 **argv)
     printf("%-10s: %d\n", "DELAY", delay_in_ms);
     printf("%-10s: %d\n", "UNIT SIZE", bytes_on_send);
 	printf("%-10s: %d\n", "NUM", rec_num);
+    printf("%-10s: %d\n", "MIX", mix);
    	printf("%-10s: %d\n", "DEBUG", dbg);
+    printf("%-10s: %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", "TIME",
+        datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
+        datetime.tv_wday, datetime.tv_hour, datetime.tv_min, 
+        datetime.tv_sec);
     printf("--------------------------\n\n");
-    
+
 	(void)pen_params_init();
     (void)dyn_params_init();
 

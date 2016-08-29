@@ -27,6 +27,7 @@ extern "C" {
 #endif /*  __cpluscplus */
 
 static u32 userid = 0;
+static u32 chipid[3] = {0};
 
 
 s32 get_userid(u8 * buf,u8 len)
@@ -43,14 +44,21 @@ s32 set_userid(u32 id)
     return ret;
 }
 
+s32 set_chipid(u8 * buf, u8 len)
+{
+    u32 *newid = (u32 *)buf;
+	chipid[0] = newid[0]; //0x00000000
+	chipid[1] = newid[1]; //0x00000000;
+    chipid[2] = newid[2]; //userid;
+    return 0;
+}
+
 s32 get_chipid(u8 * buf, u8 len)
 {
-    u32 *chipid = NULL;
-
-	chipid = (u32 *)buf;	
-	chipid[0] = 0x77777777;
-	chipid[1] = 0xFFFFFFFF;
-    chipid[2] = userid;
+    u32 *id = (u32 *)buf;
+	id[0] = chipid[0];
+	id[1] = chipid[1];
+    id[2] = chipid[2];
     return 0;
 }
 
