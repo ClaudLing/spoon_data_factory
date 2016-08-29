@@ -6,7 +6,7 @@ LDFLAGS =
 SRCS = $(wildcard *.c main/*.c src/*.c) 
 INCS = $(addprefix -I, . inc) 
 OBJS = $(patsubst %c, %o, $(SRCS))  
-TARGET = $(addprefix exe/, $(basename $(notdir $(wildcard main/*.c))))   
+TARGET = $(addsuffix .exe, $(addprefix exe/, $(basename $(notdir $(wildcard main/*.c)))))  
 
 .PHONY: all clean  
   

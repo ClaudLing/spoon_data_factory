@@ -746,7 +746,7 @@ void usage()
     printf("\n\n");
     printf("Examples:\n");
 	printf(" Generate upgrade image:\n");
-	printf("    sdf -a114.215.121.190 -p9203 -s512 -i1000 -d100 -u476289 -c05D9FF313433504B51126828 -n100 -m0 -l2\n");
+	printf("    sdf.exe -a114.215.121.190 -p9203 -s512 -i1000 -d100 -u476289 -c05D9FF313433504B51126828 -n100 -m0 -l2\n");
 }
 
 /*将大写字母转换成小写字母*/
