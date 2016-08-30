@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <errno.h>
 #include <unistd.h>
@@ -95,6 +96,18 @@ extern "C" {
     									+TRANS_HDR_SEQID_SIZE+TRANS_HDR_FRAMEID_SIZE+TRANS_HDR_METAID_SIZE)
 
 #define MAX_CONNECT_TIMES 				5
+
+#define MAX_REC_NUM						20
+
+typedef struct tagS_REC_STAT
+{
+    u32 userid;
+    rec_time time;
+    u8 chipid[CPU_ID_SIZE];
+    u32 size;
+    u32 pages;
+    s32 stat; /* 0: Complete 1: Incomplete 2: Damage */
+}S_REC_STAT,*S_REC_STAT_PTR;
 
 s32 math_table[] = {
 /*度     sin    cos    */
@@ -204,6 +217,10 @@ static u32 delay_in_ms = 0;
 static u32 bytes_on_send = 0;
 static s8 *chipidstr = NULL;
 static u32 mix = 1;
+static s8 infile[128];
+static u32 divmode = 0;
+
+
 
 u8 *pagebuf = NULL;
 u8 *sendbuf = NULL;
@@ -218,7 +235,7 @@ s8 server_ip[32];
 s32 server_port = 9203;
 date_time datetime;
 fd_set writefd;
-
+S_REC_STAT *rec_stat_list = NULL;
 
 static s32 pen_params_init()
 {
@@ -716,6 +733,180 @@ s32 gen_one_record()
     return 0;
 }
 
+u32 get_file_size(const s8 *path)  
+{  
+    u32 filesize = 0;      
+    struct stat statbuff;
+    if (stat(path, &statbuff) < 0){  
+        return 0;  
+    }else{  
+        filesize = statbuff.st_size;  
+    }  
+    return filesize;  
+}
+
+s32 check_empty(s8 *buf, u32 size)
+{
+    u32 i = 0;
+    for (i = 0; i < size; i++) {
+        if (0xFF != buf[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+s32 save_single_rec(S_REC_STAT * rec, u32 append)
+{
+    u32 ret_sz = 0;
+    static FILE *dest_fp = NULL;
+    SAVEDATA_HEADER_T *page_hdr = (SAVEDATA_HEADER_T *)pagebuf;
+    static s8 destfilename[64];    
+
+	if (0 == append) {
+        if (dest_fp) {
+            MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
+            fclose(dest_fp);
+        }        
+        snprintf(destfilename, sizeof(destfilename)-1, "%04d%02d%02d%02d%02d%02d-%06d-%08X%08X%08X.bin", 
+            (u32)(rec->time.tv_year+CENTURY_BASE), rec->time.tv_mon, rec->time.tv_mday, 
+            rec->time.tv_hour, rec->time.tv_min, rec->time.tv_sec, rec->userid, 
+            *(((u32 *)(rec->chipid))+2), *(((u32 *)(rec->chipid))+1), 
+            *(((u32 *)(rec->chipid))+0));
+	    if (NULL == (dest_fp = fopen(destfilename, "wb+"))) {
+	        MOD_PRINT(MOD_DEBUG_ERR, "Can not open dest file %s \n", destfilename);
+	        return -1;
+	    }
+        else {
+            MOD_PRINT(MOD_DEBUG_INF, "Create new dest file %s \n", destfilename);
+        }
+    }
+    
+    if (2 == append) {
+        if (dest_fp) {
+            MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
+            fclose(dest_fp);
+        }
+    }
+    else {
+	    if ((ret_sz = fwrite((void *)(pagebuf+SAVEDATA_HEADER_SIZE), 
+	        (page_hdr->totalLength+12-SAVEDATA_HEADER_SIZE), 
+	        1, dest_fp)) != 1) {
+	        MOD_PRINT(MOD_DEBUG_ERR, "Write dest file %s error\n", destfilename);
+	        fclose(dest_fp);
+	        return -1;
+	    }
+    }
+    return 0;
+}
+
+s32 parse_log_file(s8 *srcfile)
+{
+    FILE *src_fp = NULL;
+    u32 filesz = 0, left_sz = 0, rw_sz = 0, ret_sz = 0;
+    u32 actsz = 0;
+    u32 pages = 0;
+    u16 crc = 0;
+    u32 corrupt = 0;
+    SAVEDATA_HEADER_T *page_hdr = NULL;
+    
+    if (NULL == (src_fp = fopen(srcfile, "rb"))) {
+        printf("Cant open src file %s\n", srcfile);
+        return -1;
+	}
+
+    filesz = get_file_size(srcfile);
+    left_sz = filesz;
+
+	while (left_sz) {
+	    rw_sz = (left_sz > RAW_SAVE_SIZE_ALIGN) ? RAW_SAVE_SIZE_ALIGN : left_sz;
+	    if ((ret_sz = fread((void *)pagebuf, rw_sz, 1, src_fp)) != 1) {
+	    	if (src_fp) {
+	        	fclose(src_fp);
+            }
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;
+            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
+	    	return -1;
+		}
+		page_hdr = (SAVEDATA_HEADER_T *)pagebuf;
+        if ((0xDEADBEEF != page_hdr->magic) && !check_empty((s8 *)pagebuf, rw_sz)) { /*The end of real data*/
+            fclose(src_fp);
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
+            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;  
+            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
+            return 0;
+        }
+        /* CRC checking */
+        crc = com_crc((u8*)&(page_hdr->dataType), SAVEDATA_HEADER_SIZE - 6);
+        crc = com_crc_iv((u8*)(pagebuf+SAVEDATA_HEADER_SIZE), (page_hdr->totalLength+12-SAVEDATA_HEADER_SIZE), crc);
+        if (crc != page_hdr->crc) {
+            printf("CRC checking failed\n");
+        	corrupt = 1;
+            if (rw_sz == left_sz) { // The end of file
+            	fclose(src_fp);
+                rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
+	            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
+	            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;             
+                save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
+            	return 0;
+            }
+        }
+		if (memcmp((void *)&(rec_stat_list[(rec_num>0)?(rec_num-1):0].time), (void *)&page_hdr->timeStamp, sizeof(rec_time))) {  /* New record */          
+            memcpy((void *)&(rec_stat_list[rec_num].time), (void *)&page_hdr->timeStamp, sizeof(rec_time));
+            rec_stat_list[rec_num].userid = os_htonl(*(u32 *)page_hdr->userID);
+            memcpy(rec_stat_list[rec_num].chipid, page_hdr->cpuID, CPU_ID_SIZE);
+            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num]), 0);            
+            if (rec_num) {
+                rec_stat_list[rec_num-1].size = actsz;
+	            rec_stat_list[rec_num-1].pages = pages;
+	            rec_stat_list[rec_num-1].stat = corrupt;
+            }
+            rec_num++;
+            corrupt = 0;
+            actsz = 0;  
+            pages = 0;
+        }
+        /* Old record */
+        else {
+            if (1 == corrupt) 
+            	corrupt = 2;
+            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 1);
+        }
+        left_sz -= rw_sz;
+        actsz += rw_sz;
+        pages++;
+	}
+    return 0;
+}
+
+void dump_log_statics(s8 *srcfile)
+{
+    u32 i = 0;
+    
+    printf("-------------------------------------------------------------------------\n");
+    printf("             %s size %d, total rec num %d\n", srcfile, get_file_size(srcfile), rec_num);
+    printf("-------------------------------------------------------------------------\n");
+    for (i = 0; i < rec_num; i++) {
+        printf("%d %08X%08X%08X %04d-%02d-%02d %02d:%02d:%02d, size %d pages %d\n", 
+                rec_stat_list[0].userid,
+                *((u32 *)(rec_stat_list[i].chipid)+2),
+                *((u32 *)(rec_stat_list[i].chipid)+1),
+                *((u32 *)(rec_stat_list[i].chipid)),
+                (u32)(rec_stat_list[i].time.tv_year + CENTURY_BASE), 
+                rec_stat_list[i].time.tv_mon, 
+                rec_stat_list[i].time.tv_mday, 
+                rec_stat_list[i].time.tv_hour, 
+                rec_stat_list[i].time.tv_min, 
+                rec_stat_list[i].time.tv_sec,                
+                rec_stat_list[i].size,
+                rec_stat_list[i].pages);
+	}
+    printf("-------------------------------------------------------------------------\n");
+}
+
 void catch_Signal(int Sign)
 {
     switch(Sign)
@@ -732,7 +923,7 @@ void catch_Signal(int Sign)
 void usage()
 {
     printf("Usage:\n\n");
-    printf("sdf -a<ip> -p<port> -s<unit> -i<interval> -d<delay> -u<userid> -c<chipid> -n<num> -l<debug> -m<mode>\n");
+    printf("sdf -a<ip> -p<port> -s<unit> -i<interval> -d<delay> -u<userid> -c<chipid> -n<num> -l<debug> -m<mode> -finputfile\n");
     printf("    -a:           ip address of remote server\n");
     printf("    -p:           port number of remote server\n");
     printf("    -s:           packet size\n");
@@ -743,17 +934,19 @@ void usage()
     printf("    -n:           recored number, -1 means endless\n");
     printf("    -l:           debug level, 0-none 1-tidy 2-detail\n");
     printf("    -m:           mixed mode, 0-disable, 1-mix(default)\n");
+    printf("    -f:           input file, output will be separate binary\n");
     printf("\n\n");
     printf("Examples:\n");
-	printf(" Generate upgrade image:\n");
-	printf("    sdf.exe -a114.215.121.190 -p9203 -s512 -i1000 -d100 -u476289 -c05D9FF313433504B51126828 -n100 -m0 -l2\n");
+	printf("    sdf.exe -a114.215.121.190 -p9203 -s512 -i120000 -d100 -u476289 -c05D9FF313433504B51126828 -n10 -m0 -l2\n");
+    printf("    sdf.exe -flog.bin\n");
+    
 }
 
 /*将大写字母转换成小写字母*/
 s32 tolower(s32 c)
 {
-    if (c >= 'A' && c <= 'Z') {       
-        return c + 'a' - 'A';   
+    if (c >= 'A' && c <= 'Z') {
+        return c + 'a' - 'A';
     }
     else {
         return c;
@@ -783,7 +976,9 @@ int htoi(char *s)
     else {  
         i = 0;  
     }
-    for (; (s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'z') || (s[i] >='A' && s[i] <= 'Z');++i) {  
+    for (; (s[i] >= '0' && s[i] <= '9') 
+        || (s[i] >= 'a' && s[i] <= 'z') 
+        || (s[i] >='A' && s[i] <= 'Z');++i) {  
         if (tolower(s[i]) > '9') 
             n = 16 * n + (10 + tolower(s[i]) - 'a');  
         else 
@@ -800,16 +995,9 @@ s32 main(s32 argc, s8 **argv)
     s32 opt;
     s8 chipidseg[12];
     
-	signal(SIGPIPE, catch_Signal);
-    
+	signal(SIGPIPE, catch_Signal);    
     memset(server_ip, 0x00, sizeof(server_ip));
-
-    if (argc < 9) {
-        usage();
-        return -1;
-    }
-
-	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:")) != -1) {
+	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:f:")) != -1) {
         switch(opt) {
             case 'a':
                 strcpy(server_ip, optarg);
@@ -857,6 +1045,10 @@ s32 main(s32 argc, s8 **argv)
             case 'm':
                 mix = atol(optarg);
                 break;
+            case 'f':
+                strncpy(infile, optarg, strlen(optarg));
+                divmode = 1;
+                break;
             default:
 				printf("Invalid parameter!\n");
 				usage();
@@ -864,35 +1056,18 @@ s32 main(s32 argc, s8 **argv)
         }
 	}
 
-    if (!chipidstr) {
-        chipid[2] = userid;
-        chipid[1] = 0xFFFFFFFF;
-        chipid[0] = 0xFFFFFFFF;
-        (void)set_chipid((u8 *)chipid, CPU_ID_SIZE);
+    if ((divmode)) {
+        if (argc != 2) {
+	        usage();
+	        return -1;
+        }
     }
-	get_date_and_time(0, &datetime);
-    
-    printf("--------------------------\n");
-    printf("%-10s: %s:%d\n", "SERVER", server_ip, server_port);
-    printf("%-10s: %d\n", "USERID", userid);
-    printf("%-10s: %08X%08X%08X\n", "CHIPID", chipid[2], chipid[1], chipid[0]);
-	printf("%-10s: %d\n", "INTERVAL", rec_interval_in_ms);
-    printf("%-10s: %d\n", "DELAY", delay_in_ms);
-    printf("%-10s: %d\n", "UNIT SIZE", bytes_on_send);
-	printf("%-10s: %d\n", "NUM", rec_num);
-    printf("%-10s: %d\n", "MIX", mix);
-   	printf("%-10s: %d\n", "DEBUG", dbg);
-    printf("%-10s: %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", "TIME",
-        datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
-        datetime.tv_wday, datetime.tv_hour, datetime.tv_min, 
-        datetime.tv_sec);
-    printf("--------------------------\n\n");
-
-	(void)pen_params_init();
-    (void)dyn_params_init();
-
-    (void)init_clinet();
-    (void)connect_server();
+    else {
+        if (argc != 11) {
+	        usage();
+	        return -1;
+        }
+    }    
 
     pagebuf = (u8 *)malloc(RAW_SAVE_SIZE_ALIGN);
     if (!pagebuf) {
@@ -906,16 +1081,61 @@ s32 main(s32 argc, s8 **argv)
     if (!msgbuf) {
         return -1;
     }
-
-	gen_basic_info_passthrouth_packet(); 
-	for (i = 0 ; i < rec_num ; i++) {
-        gen_one_record();
-        printf("USERID %d (%d) %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", 
-            userid, i, datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
-            datetime.tv_wday, datetime.tv_hour, datetime.tv_min, datetime.tv_sec);
-	    usleep(1000*rec_interval_in_ms);
-        i = (endless) ? 0 : i;
-	}
+    if (divmode) {
+        rec_num = 0;        
+        rec_stat_list = (S_REC_STAT *)malloc(MAX_REC_NUM*sizeof(S_REC_STAT));
+        if (!rec_stat_list) {
+            printf("Memory alloc error!\n");
+			return -1;
+        }
+        memset(rec_stat_list, 0, MAX_REC_NUM*sizeof(S_REC_STAT));                
+        parse_log_file(infile);
+        dump_log_statics(infile);
+    }
+	else {
+        if (!chipidstr) {
+	        chipid[2] = userid;
+	        chipid[1] = 0xFFFFFFFF;
+	        chipid[0] = 0xFFFFFFFF;
+	        (void)set_chipid((u8 *)chipid, CPU_ID_SIZE);
+	    }
+		get_date_and_time(0, &datetime);
+	    
+	    printf("-----------------------------------------\n");
+	    printf("%-10s: %s:%d\n", "SERVER", server_ip, server_port);
+	    printf("%-10s: %d\n", "USERID", userid);
+	    printf("%-10s: %08X%08X%08X\n", "CHIPID", chipid[2], chipid[1], chipid[0]);
+		printf("%-10s: %d\n", "INTERVAL", rec_interval_in_ms);
+	    printf("%-10s: %d\n", "DELAY", delay_in_ms);
+	    printf("%-10s: %d\n", "UNIT SIZE", bytes_on_send);
+		printf("%-10s: %d\n", "NUM", rec_num);
+	    printf("%-10s: %d\n", "MIX", mix);
+	   	printf("%-10s: %d\n", "DEBUG", dbg);
+	    printf("%-10s: %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", "TIME",
+	        datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
+	        datetime.tv_wday, datetime.tv_hour, datetime.tv_min, 
+	        datetime.tv_sec);
+	    printf("-----------------------------------------\n\n");
+    
+        (void)pen_params_init();
+    	(void)dyn_params_init();
+        (void)init_clinet();
+    	(void)connect_server();
+		gen_basic_info_passthrouth_packet();
+		for (i = 0 ; i < rec_num ; i++) {
+	        gen_one_record();
+	        printf("USERID %d (%d) %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", 
+	            userid, i, datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
+	            datetime.tv_wday, datetime.tv_hour, datetime.tv_min, datetime.tv_sec);
+		    usleep(1000*rec_interval_in_ms);
+	        i = (endless) ? 0 : i;
+		}
+	    
+    }
+    if (rec_stat_list) {
+        free(rec_stat_list);
+    	rec_stat_list = NULL;
+    }        
     free(msgbuf);
 	free(sendbuf);
     free(pagebuf);
