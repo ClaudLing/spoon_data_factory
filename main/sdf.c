@@ -440,17 +440,17 @@ s32 connect_server()
                 continue;  
             }  
           	else  { 
-                printf("%s:%d, select failed\n", __FILE__, __LINE__);  
+                printf("select failed\n");  
                 return -1;  
           	}  
         }  
         else if(selret == 0)  {  
-            printf("%s:%d, connect socket timeout\n", __FILE__, __LINE__);  
+            printf("onnect socket timeout\n");  
             ntrytimes++;  
             continue;  
         }  
         else  {  
-            printf("%s:%d, select default\n", __FILE__, __LINE__);               
+            printf("select default\n");               
             if(FD_ISSET(sock_fd, &fds_read) || FD_ISSET(sock_fd, &fds_write))  
             {  
                 int error = 0;  
@@ -886,9 +886,9 @@ void dump_log_statics(s8 *srcfile)
 {
     u32 i = 0;
     
-    printf("-------------------------------------------------------------------------\n");
+    printf("\n---------------------------------------------------------------------------\n");
     printf("             %s size %d, total rec num %d\n", srcfile, get_file_size(srcfile), rec_num);
-    printf("-------------------------------------------------------------------------\n");
+    printf("---------------------------------------------------------------------------\n\n");
     for (i = 0; i < rec_num; i++) {
         printf("%d %08X%08X%08X %04d-%02d-%02d %02d:%02d:%02d, size %d pages %d\n", 
                 rec_stat_list[0].userid,
@@ -904,12 +904,12 @@ void dump_log_statics(s8 *srcfile)
                 rec_stat_list[i].size,
                 rec_stat_list[i].pages);
 	}
-    printf("-------------------------------------------------------------------------\n");
+    printf("\n---------------------------------------------------------------------------\n");
 }
 
-void catch_Signal(int Sign)
+void catch_signal(int sign)
 {
-    switch(Sign)
+    switch(sign)
     {
 	    case SIGPIPE:
             close_client();
@@ -995,7 +995,7 @@ s32 main(s32 argc, s8 **argv)
     s32 opt;
     s8 chipidseg[12];
     
-	signal(SIGPIPE, catch_Signal);    
+	signal(SIGPIPE, catch_signal);    
     memset(server_ip, 0x00, sizeof(server_ip));
 	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:f:")) != -1) {
         switch(opt) {
