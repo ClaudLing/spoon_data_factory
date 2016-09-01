@@ -1,5 +1,5 @@
 : the bin file to be updated
 
-Spoon_Data_Factory.exe -flog.bin
+sdf.exe -flog.bin
 
 pause
