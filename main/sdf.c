@@ -759,15 +759,23 @@ s32 check_empty(s8 *buf, u32 size)
 s32 save_single_rec(S_REC_STAT * rec, u32 append)
 {
     u32 ret_sz = 0;
-    static FILE *dest_fp = NULL;
     SAVEDATA_HEADER_T *page_hdr = (SAVEDATA_HEADER_T *)pagebuf;
-    static s8 destfilename[64];    
-
+    static s8 destfilename[64];
+	static s8 dumpfilename[64];
+    static FILE *dest_fp = NULL;
+    static FILE *dump_fp = NULL;
+    REC_DATA *item = NULL;
+    u32 i = 0;
+    u32 leftlen = 0;
+    s8 dumpline[512];
+    u32 dumplinesz = 0;
+    
 	if (0 == append) {
         if (dest_fp) {
             MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
             fclose(dest_fp);
-        }        
+        }
+        /* time-userid-chipid.bin */
         snprintf(destfilename, sizeof(destfilename)-1, "%04d%02d%02d%02d%02d%02d-%06d-%08X%08X%08X.bin", 
             (u32)(rec->time.tv_year+CENTURY_BASE), rec->time.tv_mon, rec->time.tv_mday, 
             rec->time.tv_hour, rec->time.tv_min, rec->time.tv_sec, rec->userid, 
@@ -780,12 +788,51 @@ s32 save_single_rec(S_REC_STAT * rec, u32 append)
         else {
             MOD_PRINT(MOD_DEBUG_INF, "Create new dest file %s \n", destfilename);
         }
+
+        /* time-userid-chipid-dump.txt */
+        snprintf(dumpfilename, sizeof(dumpfilename)-1, "%04d%02d%02d%02d%02d%02d-%06d-%08X%08X%08X-dump.txt", 
+            (u32)(rec->time.tv_year+CENTURY_BASE), rec->time.tv_mon, rec->time.tv_mday, 
+            rec->time.tv_hour, rec->time.tv_min, rec->time.tv_sec, rec->userid, 
+            *(((u32 *)(rec->chipid))+2), *(((u32 *)(rec->chipid))+1), 
+            *(((u32 *)(rec->chipid))+0));
+	    if (NULL == (dump_fp = fopen(dumpfilename, "wb+"))) {
+	        MOD_PRINT(MOD_DEBUG_ERR, "Can not open dump file %s \n", dumpfilename);
+	        return -1;
+	    }
+        else {
+            MOD_PRINT(MOD_DEBUG_INF, "Create new dump file %s \n", dumpfilename);
+        }
+        dumplinesz = snprintf(dumpline, sizeof(dumpline)-1, 
+                    "%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s%8s\n", 
+                    "X0.x", "X0.y", "X0.z", "X0.r",
+                    "G0.x", "G0.y", "G0.z", "G0.r",
+                    "M0.x", "M0.y", "M0.z", "M0.r",
+                    "X1.x", "X1.y", "X1.z", "X1.r",
+                    "G1.x", "G1.y", "G1.z", "G1.r",
+                    "M1.x", "M1.y", "M1.z", "M1.r",
+                    "angel0", "angel1");
+        if ((ret_sz = fwrite(dumpline, dumplinesz, 1, dump_fp)) != 1) {
+    		MOD_PRINT(MOD_DEBUG_ERR, "Write dump file %s error\n", dumpfilename);
+	        fclose(dump_fp);
+	        return -1;
+	    }
+        memset(dumpline, '-', 8*26);
+        dumpline[8*26] = '\n';
+        if ((ret_sz = fwrite(dumpline, 8*26+1, 1, dump_fp)) != 1) {
+    		MOD_PRINT(MOD_DEBUG_ERR, "Write dump file %s error\n", dumpfilename);
+	        fclose(dump_fp);
+	        return -1;
+	    }
     }
     
     if (2 == append) {
         if (dest_fp) {
             MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
             fclose(dest_fp);
+        }
+        if (dump_fp) {
+            MOD_PRINT(MOD_DEBUG_INF, "Close dump file %s \n", dumpfilename);
+            fclose(dump_fp);
         }
     }
     else {
@@ -796,6 +843,32 @@ s32 save_single_rec(S_REC_STAT * rec, u32 append)
 	        fclose(dest_fp);
 	        return -1;
 	    }
+        item = (REC_DATA *)(pagebuf+SAVEDATA_HEADER_SIZE);
+        leftlen = (page_hdr->totalLength+12-SAVEDATA_HEADER_SIZE);
+        while (leftlen) {
+            if (leftlen >= sizeof(REC_DATA)) {
+                dumplinesz = snprintf(dumpline, sizeof(dumpline)-1, 
+                    "%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d%8d\n", 
+                    item->inemoX0.x, item->inemoX0.y, item->inemoX0.z, item->inemoX0.r,
+                    item->inemoG0.x, item->inemoG0.y, item->inemoG0.z, item->inemoG0.r,
+                    item->inemoM0.x, item->inemoM0.y, item->inemoM0.z, item->inemoM0.r,
+                    item->inemoX1.x, item->inemoX1.y, item->inemoX1.z, item->inemoX1.r,
+                    item->inemoG1.x, item->inemoG1.y, item->inemoG1.z, item->inemoG1.r,
+                    item->inemoM1.x, item->inemoM1.y, item->inemoM1.z, item->inemoM1.r,
+                    item->angel0, item->angel1);
+                if ((ret_sz = fwrite(dumpline, dumplinesz, 1, dump_fp)) != 1) {
+	        		MOD_PRINT(MOD_DEBUG_ERR, "Write dump file %s error\n", dumpfilename);
+			        fclose(dump_fp);
+			        return -1;
+			    }
+                leftlen -= sizeof(REC_DATA);
+                item += 1;
+            }
+            else
+            {
+                leftlen -= leftlen;
+            }
+        }        
     }
     return 0;
 }
