@@ -99,6 +99,11 @@ extern "C" {
 
 #define MAX_REC_NUM						20
 
+#define APPEND_BEGIN					0
+#define APPEND_ADD						1
+#define APPEND_END						2
+
+
 typedef struct tagS_REC_STAT
 {
     u32 userid;
@@ -748,8 +753,9 @@ u32 get_file_size(const s8 *path)
 s32 check_empty(s8 *buf, u32 size)
 {
     u32 i = 0;
-    for (i = 0; i < size; i++) {
-        if (0xFF != buf[i]) {
+    u32 *word = (u32 *)buf;    
+    for (i = 0; i < size/sizeof(u32); i++) {
+        if (0xFFFFFFFF != word[i]) {
             return 0;
         }
     }
@@ -770,7 +776,7 @@ s32 save_single_rec(S_REC_STAT * rec, u32 append)
     s8 dumpline[512];
     u32 dumplinesz = 0;
     
-	if (0 == append) {
+	if (APPEND_BEGIN == append) {
         if (dest_fp) {
             MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
             fclose(dest_fp);
@@ -825,7 +831,7 @@ s32 save_single_rec(S_REC_STAT * rec, u32 append)
 	    }
     }
     
-    if (2 == append) {
+    if (APPEND_END == append) {
         if (dest_fp) {
             MOD_PRINT(MOD_DEBUG_INF, "Close dest file %s \n", destfilename);
             fclose(dest_fp);
@@ -868,7 +874,7 @@ s32 save_single_rec(S_REC_STAT * rec, u32 append)
             {
                 leftlen -= leftlen;
             }
-        }        
+        }
     }
     return 0;
 }
@@ -897,61 +903,80 @@ s32 parse_log_file(s8 *srcfile)
 	    	if (src_fp) {
 	        	fclose(src_fp);
             }
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;
-            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
+            if (rec_num) {
+	            rec_stat_list[rec_num-1].size = actsz;
+	            rec_stat_list[rec_num-1].pages = pages;
+	            rec_stat_list[rec_num-1].stat = corrupt;
+	            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), APPEND_END);
+            }
 	    	return -1;
 		}
+
 		page_hdr = (SAVEDATA_HEADER_T *)pagebuf;
-        if ((0xDEADBEEF != page_hdr->magic) && !check_empty((s8 *)pagebuf, rw_sz)) { /*The end of real data*/
-            fclose(src_fp);
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
-            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;  
-            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
-            return 0;
+        if (0xDEADBEEF != page_hdr->magic && 0x00000000 != page_hdr->magic) { /* Not valid header */
+            if (check_empty((s8 *)pagebuf, rw_sz)) { /*The end of real data, exit*/
+	            fclose(src_fp);
+                if (rec_num) {
+		            rec_stat_list[rec_num-1].size = actsz;
+		            rec_stat_list[rec_num-1].pages = pages;
+		            rec_stat_list[rec_num-1].stat = corrupt;
+		            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), APPEND_END);
+	            }
+                left_sz -= rw_sz;
+	            return 0;
+            }
+            else { /* Skip */
+                left_sz -= rw_sz;
+                continue;
+            }
         }
         /* CRC checking */
         crc = com_crc((u8*)&(page_hdr->dataType), SAVEDATA_HEADER_SIZE - 6);
         crc = com_crc_iv((u8*)(pagebuf+SAVEDATA_HEADER_SIZE), (page_hdr->totalLength+12-SAVEDATA_HEADER_SIZE), crc);
-        if (crc != page_hdr->crc) {
+        if (crc != page_hdr->crc) { /* Crc match failed */
             printf("CRC checking failed\n");
         	corrupt = 1;
-            if (rw_sz == left_sz) { // The end of file
-            	fclose(src_fp);
-                rec_stat_list[(rec_num>0)?(rec_num-1):0].size = actsz;
-	            rec_stat_list[(rec_num>0)?(rec_num-1):0].pages = pages;
-	            rec_stat_list[(rec_num>0)?(rec_num-1):0].stat = corrupt;             
-                save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 2);
-            	return 0;
-            }
         }
-		if (memcmp((void *)&(rec_stat_list[(rec_num>0)?(rec_num-1):0].time), (void *)&page_hdr->timeStamp, sizeof(rec_time))) {  /* New record */          
-            memcpy((void *)&(rec_stat_list[rec_num].time), (void *)&page_hdr->timeStamp, sizeof(rec_time));
-            rec_stat_list[rec_num].userid = os_htonl(*(u32 *)page_hdr->userID);
-            memcpy(rec_stat_list[rec_num].chipid, page_hdr->cpuID, CPU_ID_SIZE);
-            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num]), 0);            
-            if (rec_num) {
-                rec_stat_list[rec_num-1].size = actsz;
-	            rec_stat_list[rec_num-1].pages = pages;
-	            rec_stat_list[rec_num-1].stat = corrupt;
-            }
-            rec_num++;
-            corrupt = 0;
-            actsz = 0;  
-            pages = 0;
-        }
-        /* Old record */
-        else {
-            if (1 == corrupt) 
-            	corrupt = 2;
-            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), 1);
+		else {
+            if ((0 == rec_num) || memcmp((void *)&(rec_stat_list[rec_num-1].time), (void *)&page_hdr->timeStamp, sizeof(rec_time))) {  /* New record */
+	            /* Store last record's info */
+	            if (rec_num) {
+	                rec_stat_list[rec_num-1].size = actsz;
+		            rec_stat_list[rec_num-1].pages = pages;
+		            rec_stat_list[rec_num-1].stat = corrupt;
+	            }
+	            /* Store this record's info */
+	            memcpy((void *)&(rec_stat_list[rec_num].time), (void *)&page_hdr->timeStamp, sizeof(rec_time));
+	            rec_stat_list[rec_num].userid = os_htonl(*(u32 *)page_hdr->userID);
+	            memcpy(rec_stat_list[rec_num].chipid, page_hdr->cpuID, CPU_ID_SIZE);
+	            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num]), APPEND_BEGIN);
+	            /* Reset status */
+	            rec_num++;
+	            corrupt = 0;
+	            actsz = 0;
+	            pages = 0;
+	        }
+	        else { /* Old record */
+	            if (1 == corrupt) 
+	            	corrupt = 2;
+	            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), APPEND_ADD);
+	        }
+            actsz += rw_sz;
+        	pages++;
         }
         left_sz -= rw_sz;
-        actsz += rw_sz;
-        pages++;
+        if (!left_sz) {
+ 			fclose(src_fp);
+            if (rec_num) {
+	            rec_stat_list[rec_num-1].size = actsz;
+	            rec_stat_list[rec_num-1].pages = pages;
+	            rec_stat_list[rec_num-1].stat = corrupt;
+	            save_single_rec((S_REC_STAT *)(&rec_stat_list[rec_num-1]), APPEND_END);
+            }
+        	return 0;
+        }
 	}
+    fclose(src_fp);
     return 0;
 }
 
