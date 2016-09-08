@@ -1,7 +1,7 @@
 CC = gcc
 LD = gcc
 CFLAGS =
-LDFLAGS =
+LDFLAGS =-lz -L/usr/local/lib
 
 OS_NAME = $(shell uname -o)
 LC_OS_NAME = $(shell echo $(OS_NAME) | tr '[A-Z]' '[a-z]')
@@ -25,7 +25,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)  
 	@mkdir -p exe/x86_64
 	@mkdir -p exe/linux
-	$(LD) $(LDFLAGS) -o $@ $^
+	$(LD) -o $@ $^ $(LDFLAGS) 
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCS) -o $(patsubst %c, %o, $<) -c $<

@@ -27,6 +27,7 @@
 #include <signal.h>
 #include <netinet/in.h> 
 #include <arpa/inet.h>
+#include <zlib.h>
 #include "os_def.h"
 #include "bsp.h"
 #include "crc.h"
@@ -239,8 +240,12 @@ struct sockaddr_in ser_addr;
 s8 server_ip[32];
 s32 server_port = 9203;
 date_time datetime;
+struct timeval tv;
 fd_set writefd;
 S_REC_STAT *rec_stat_list = NULL;
+u32 log_comp = 0;
+u32 emu_mode = 0;
+
 
 static s32 pen_params_init()
 {
@@ -257,7 +262,7 @@ static s32 dyn_params_init()
 
 
 /* 取当前时间，精确到微秒 */
-s32 get_date_and_time(int cst, date_time *datetime)
+s32 get_date_and_time(int cst, date_time *datetime, struct timeval *tv)
 {
     u32 i;
     s32 hms, day;
@@ -266,11 +271,10 @@ s32 get_date_and_time(int cst, date_time *datetime)
     long sec = 0;
     int MonthOffset[] = { 0,31,59,90,120,151,181,212,243,273,304,334 };
     int month_days[12] = {	31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-    struct timeval tv;
     
-    memset(&tv, 0, sizeof(tv));
-    gettimeofday(&tv, NULL);
-    sec = tv.tv_sec;
+    memset(tv, 0, sizeof(*tv));
+    gettimeofday(tv, NULL);
+    sec = tv->tv_sec;
 
     if (cst){
         sec = sec + (60*60)*BEIJINGTIME;
@@ -316,7 +320,7 @@ s32 get_date_and_time(int cst, date_time *datetime)
 static s32 reset_header(u8 *header)
 {
     SAVEDATA_HEADER_T *save_header = (SAVEDATA_HEADER_T *)header;
-    get_date_and_time(0, &datetime);
+    get_date_and_time(0, &datetime, &tv);
 
     save_header->magic = MAGIC_HEAD;
     save_header->dataType = 0;
@@ -506,13 +510,20 @@ s32 send_data(s8 * sendbuf, s32 snebuflen)
     tval.tv_sec = 3;  
     tval.tv_usec = 0;
     leftlen = snebuflen;
-
-	if (dbg == 2) {	    
+    
+	if (dbg >= 2) {
+        printf("\nSend %d\n\n", snebuflen);
 	    for (i = 0; i < snebuflen; i++) {
 	        printf("%02X ", (u8)sendbuf[i]);
+            if (!((i+1)%16))
+                printf("\n");
 	    }
-	    printf("\n===> %d\n", snebuflen);
+	    if (i%16) 
+            printf("\n");
 	}
+    if (emu_mode)
+        return 0;
+    
     while (leftlen) {
     	sendlen = (leftlen <= bytes_on_send) ? leftlen : bytes_on_send; 
 	    FD_ZERO(&fds_write);  
@@ -608,7 +619,7 @@ s32 send_trans_packet(u32 len)
     u8 * send = NULL;
     u32 sendlen = len;
     u8 type = rand()%20;
-
+    
     if (!mix)
     	type = 0;
 
@@ -635,7 +646,8 @@ s32 send_trans_packet(u32 len)
 	}
 	else  {
         if (1 == dbg) {
-            printf(". ");
+            printf(".");
+            fflush(stdout);
         }
 	    send_data((s8 *)sendbuf, sendlen);        
 	}    
@@ -667,14 +679,22 @@ s32 gen_basic_info_passthrouth_packet()
     return 0;
 }
 
-
+#define LOG_COMP_DEBUG 1
 s32 gen_trans_packet(u32 *totlen)
 {
     u8 trans_hdr[16];
     u16 crc = 0;
-    u8 * meta = NULL;
-    u8 * send = NULL;
+    u8 *meta = NULL;
+    u8 *send = NULL;
     u32 sendlen = 0;
+    u16 raw_data_len = 0;
+    u8 comp_buf[1024];
+    u32 i = 0;
+    unsigned long comp_buf_len = sizeof(comp_buf);
+#ifdef LOG_COMP_DEBUG
+    u8 decomp_buf[1024];
+    unsigned long decomp_buf_len = sizeof(decomp_buf);
+#endif
 
 	memset(trans_hdr, 0x00, sizeof(trans_hdr));
     trans_hdr[TRANS_HDR_MAGIC_OFF] = 0x7E;
@@ -683,21 +703,59 @@ s32 gen_trans_packet(u32 *totlen)
     trans_hdr[TRANS_HDR_SEQID_OFF] = 0;
     trans_hdr[TRANS_HDR_FRAMEID_OFF] = global_trans_idx++;
     *(u32 *)&(trans_hdr[TRANS_HDR_METAID_OFF]) = save_header->packageIndex;
-    
-    meta = (u8 *)(save_header->userID);
+
+	meta = (u8 *)(save_header->userID);
     crc = com_crc(&(trans_hdr[TRANS_HDR_LEN_OFF]), TRANS_HDR_HDR_SIZE-TRANS_HDR_MAGIC_SIZE);
-    crc = com_crc_iv(meta, save_header->totalLength, crc);
-	
+    if (!log_comp) { /* 不压缩 */
+        raw_data_len = save_header->totalLength;
+        crc = com_crc_iv(meta, save_header->totalLength, crc);
+    }
+    else {
+        memset(comp_buf, 0x00, comp_buf_len);
+        compress(comp_buf, &comp_buf_len, meta, save_header->totalLength);
+#ifdef LOG_COMP_DEBUG
+		if (dbg > 1) {
+			printf("\nCompress size %d --> %ld\n\n", save_header->totalLength, comp_buf_len);
+			for (i = 0; i < save_header->totalLength; i++) {
+			    printf("%02X ", meta[i]);
+                if (!((i+1)%16))
+                    printf("\n");
+			}
+            if (i%16)
+                printf("\n");
+	        printf("-----------------------------------------------\n");
+	        for (i = 0; i < comp_buf_len; i++) {
+			    printf("%02X ", comp_buf[i]);
+                if (!((i+1)%16))
+                    printf("\n");
+			}
+	        if (i%16)
+                printf("\n");
+        }
+        memset(decomp_buf, 0x00, decomp_buf_len);
+        uncompress(decomp_buf, &decomp_buf_len, comp_buf, comp_buf_len);
+        if (memcmp(meta, decomp_buf, save_header->totalLength)) {
+            printf("Compress error!\n");
+        }        
+#endif
+        memset(meta, 0x00, save_header->totalLength);
+        memcpy(meta, comp_buf, comp_buf_len);
+        raw_data_len = comp_buf_len;
+        crc = com_crc_iv(meta, raw_data_len, crc);
+    }
     memset(sendbuf, 0x00, RAW_SAVE_SIZE_ALIGN);
     send = sendbuf;
+    /* Trans header */
     memcpy(send, trans_hdr, TRANS_HDR_HDR_SIZE);
     send += TRANS_HDR_HDR_SIZE;
-    memcpy(send, meta, save_header->totalLength);
-    send += save_header->totalLength;
-    memcpy(send, (u8 *)&crc, 2);
+    /* Meta data */
+    memcpy(send, meta, raw_data_len);
+    /* Crc byte */
+    send += raw_data_len;
+    memcpy(send, (u8 *)&crc, sizeof(crc));
     send += 2;
 
-	sendlen = TRANS_HDR_HDR_SIZE+save_header->totalLength+2;
+	sendlen = TRANS_HDR_HDR_SIZE + raw_data_len + sizeof(crc);
     *totlen = sendlen;
     return 0;
 }
@@ -734,7 +792,9 @@ s32 gen_one_record()
         save_header->crc = com_crc((u8*)&(save_header->dataType), SAVEDATA_HEADER_SIZE - 6);
         save_header->totalLength = SAVEDATA_HEADER_SIZE - 12;
     }
-    printf("\n");
+    if (1 == dbg) {
+        printf("\n");
+    }
     return 0;
 }
 
@@ -1033,9 +1093,12 @@ void usage()
     printf("    -l:           debug level, 0-none 1-tidy 2-detail\n");
     printf("    -m:           mixed mode, 0-disable, 1-mix(default)\n");
     printf("    -f:           input file, output will be separate binary\n");
+    printf("    -z            compress enable\n");
+    printf("    -e            emulate enable\n");    
+    printf("    -h            usage\n"); 
     printf("\n\n");
     printf("Examples:\n");
-	printf("    sdf.exe -a114.215.121.190 -p9203 -s512 -i120000 -d100 -u476289 -c05D9FF313433504B51126828 -n10 -m0 -l2\n");
+	printf("    sdf.exe -a114.215.121.190 -p9203 -s512 -i1000 -d100 -u476289 -c05D9FF313433504B51126828 -n1 -m0 -l1\n");
     printf("    sdf.exe -flog.bin\n");
     
 }
@@ -1092,10 +1155,12 @@ s32 main(s32 argc, s8 **argv)
     u32 chipid[3];
     s32 opt;
     s8 chipidseg[12];
+    date_time endtime;
+    struct timeval endtv;
     
 	signal(SIGPIPE, catch_signal);    
     memset(server_ip, 0x00, sizeof(server_ip));
-	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:f:")) != -1) {
+	while((opt = getopt(argc,argv,"a:p:s:i:d:u:c:n:m:l:f:zeh")) != -1) {
         switch(opt) {
             case 'a':
                 strcpy(server_ip, optarg);
@@ -1147,6 +1212,15 @@ s32 main(s32 argc, s8 **argv)
                 strncpy(infile, optarg, strlen(optarg));
                 divmode = 1;
                 break;
+            case 'z':
+                log_comp = 1;
+                break;
+            case 'e':
+                emu_mode = 1;
+                break;
+            case 'h':
+                usage();
+    			exit(0);
             default:
 				printf("Invalid parameter!\n");
 				usage();
@@ -1161,11 +1235,11 @@ s32 main(s32 argc, s8 **argv)
         }
     }
     else {
-        if (argc != 11) {
+        if (argc < 11) {
 	        usage();
 	        return -1;
         }
-    }    
+    }
 
     pagebuf = (u8 *)malloc(RAW_SAVE_SIZE_ALIGN);
     if (!pagebuf) {
@@ -1197,7 +1271,7 @@ s32 main(s32 argc, s8 **argv)
 	        chipid[0] = 0xFFFFFFFF;
 	        (void)set_chipid((u8 *)chipid, CPU_ID_SIZE);
 	    }
-		get_date_and_time(0, &datetime);
+		get_date_and_time(0, &datetime, &tv);
 	    
 	    printf("-----------------------------------------\n");
 	    printf("%-10s: %s:%d\n", "SERVER", server_ip, server_port);
@@ -1208,8 +1282,9 @@ s32 main(s32 argc, s8 **argv)
 	    printf("%-10s: %d\n", "UNIT SIZE", bytes_on_send);
 		printf("%-10s: %d\n", "NUM", rec_num);
 	    printf("%-10s: %d\n", "MIX", mix);
+        printf("%-10s: %d\n", "COMPRESS", log_comp);
 	   	printf("%-10s: %d\n", "DEBUG", dbg);
-	    printf("%-10s: %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", "TIME",
+	    printf("%-10s: %d-%02d-%02d(%d) %02d:%02d:%02d (UTC)\n", "TIME",
 	        datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
 	        datetime.tv_wday, datetime.tv_hour, datetime.tv_min, 
 	        datetime.tv_sec);
@@ -1222,9 +1297,11 @@ s32 main(s32 argc, s8 **argv)
 		gen_basic_info_passthrouth_packet();
 		for (i = 0 ; i < rec_num ; i++) {
 	        gen_one_record();
-	        printf("USERID %d (%d) %d-%02d-%02d(%d) %02d:%02d:%02d done!\n", 
+            get_date_and_time(0, &endtime, &endtv);
+	        printf("USERID %d (%d) %d-%02d-%02d(%d) %02d:%02d:%02d done, cost %d s\n", 
 	            userid, i, datetime.tv_year, datetime.tv_mon, datetime.tv_mday, 
-	            datetime.tv_wday, datetime.tv_hour, datetime.tv_min, datetime.tv_sec);
+	            datetime.tv_wday, datetime.tv_hour, datetime.tv_min, datetime.tv_sec, 
+	            (u32)(endtv.tv_sec-tv.tv_sec));
 		    usleep(1000*rec_interval_in_ms);
 	        i = (endless) ? 0 : i;
 		}
