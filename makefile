@@ -33,9 +33,6 @@ $(TARGET): $(OBJS)
 clean:  
 	rm -f $(OBJS) $(TARGET)
 	
-test:
-	echo $(PLATFORM)
-	
 	
 
 
